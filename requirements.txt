@@ -1,4 +1,9 @@
+fastapi
+uvicorn
+celery
+redis
 pandas
 email-validator
 dnspython
 tqdm
+python-multipart
