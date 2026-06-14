@@ -45,22 +45,27 @@ def validate_email_batch(self, file_path: str, email_column: str = "Email"):
             email = validation.normalized
             domain = email.split('@')[1]
             if is_role_based(email):
-                status = "risky"
+                status = "likely_junk"
+                confidence = "low"
                 reason = "Role-based address"
             elif not has_mx(domain):
                 status = "invalid"
+                confidence = "high"
                 reason = f"No MX record for {domain}"
             else:
-                status = "valid"
+                status = "likely_valid"
+                confidence = "high"
                 reason = "Passed all checks"
         except EmailNotValidError as e:
             status = "invalid"
+            confidence = "high"
             reason = str(e)
         except Exception as e:
-            status = "invalid"
-            reason = f"Unexpected error: {str(e)}"
+            status = "uncertain"
+            confidence = "low"
+            reason = f"Could not verify: {str(e)}"
 
-        results.append({"email": email, "status": status, "reason": reason})
+        results.append({"email": email, "status": status, "confidence": confidence, "reason": reason})
         self.update_state(state="PROGRESS", meta={"current": idx + 1, "total": total})
 
     results_df = pd.DataFrame(results)
@@ -113,8 +118,8 @@ def root():
     .card { background: #fff; border-radius: 10px; padding: 36px 32px; width: 100%; max-width: 460px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
     h1 { font-size: 20px; margin-bottom: 6px; }
     .sub { color: #666; font-size: 13px; margin-bottom: 28px; line-height: 1.5; }
-    .upload-box { border: 2px dashed #ccc; border-radius: 8px; padding: 28px 16px; text-align: center; cursor: pointer; margin-bottom: 14px; transition: border-color 0.2s; }
-    .upload-box:hover { border-color: #888; }
+    .upload-box { border: 2px dashed #ccc; border-radius: 8px; padding: 28px 16px; text-align: center; cursor: pointer; margin-bottom: 14px; transition: border-color 0.2s, background 0.2s; }
+    .upload-box:hover, .upload-box.drag-over { border-color: #111; background: #f9f9f9; }
     .upload-box p { font-size: 14px; color: #555; }
     .upload-box span { font-size: 12px; color: #999; }
     #fileInput { display: none; }
@@ -142,8 +147,8 @@ def root():
     <h1>Bulk Email Validator</h1>
     <p class="sub">Upload a CSV with an <strong>Email</strong> column. The tool checks syntax, DNS, and MX records — then gives you a clean results file.</p>
 
-    <div class="upload-box" onclick="document.getElementById('fileInput').click()">
-      <p>Click to choose a CSV file</p>
+    <div class="upload-box" id="uploadBox" onclick="document.getElementById('fileInput').click()">
+      <p>Drag & drop a CSV file here, or click to browse</p>
       <span>Only .csv files supported</span>
       <input type="file" id="fileInput" accept=".csv" onchange="onFileSelected(this)">
       <div id="fileName"></div>
@@ -166,6 +171,22 @@ def root():
   <script>
     let jobId = null;
     let poll = null;
+
+    // Drag and drop
+    const box = document.getElementById('uploadBox');
+    box.addEventListener('dragover', e => { e.preventDefault(); box.classList.add('drag-over'); });
+    box.addEventListener('dragleave', () => box.classList.remove('drag-over'));
+    box.addEventListener('drop', e => {
+      e.preventDefault();
+      box.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file && file.name.endsWith('.csv')) {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        document.getElementById('fileInput').files = dt.files;
+        onFileSelected(document.getElementById('fileInput'));
+      }
+    });
 
     function onFileSelected(input) {
       const name = input.files[0]?.name || '';
