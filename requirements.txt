@@ -1,0 +1,4 @@
+pandas
+email-validator
+dnspython
+tqdm
