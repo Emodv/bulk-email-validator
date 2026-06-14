@@ -1,7 +1,7 @@
 import os
 import uuid
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from celery import Celery
 import pandas as pd
 from pathlib import Path
@@ -99,6 +99,138 @@ def download_result(job_id: str):
         raise HTTPException(status_code=404, detail="Result not ready")
     return FileResponse(task.result, filename="validation_results.csv")
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 def root():
-    return {"message": "Bulk Email Validator API is running"}
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bulk Email Validator</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #f4f4f4; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .card { background: #fff; border-radius: 10px; padding: 36px 32px; width: 100%; max-width: 460px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+    h1 { font-size: 20px; margin-bottom: 6px; }
+    .sub { color: #666; font-size: 13px; margin-bottom: 28px; line-height: 1.5; }
+    .upload-box { border: 2px dashed #ccc; border-radius: 8px; padding: 28px 16px; text-align: center; cursor: pointer; margin-bottom: 14px; transition: border-color 0.2s; }
+    .upload-box:hover { border-color: #888; }
+    .upload-box p { font-size: 14px; color: #555; }
+    .upload-box span { font-size: 12px; color: #999; }
+    #fileInput { display: none; }
+    #fileName { margin-top: 8px; font-size: 13px; color: #333; font-weight: 600; }
+    button { width: 100%; padding: 13px; background: #111; color: #fff; border: none; border-radius: 7px; font-size: 15px; cursor: pointer; }
+    button:disabled { background: #bbb; cursor: not-allowed; }
+    .section { margin-top: 22px; }
+    .label { font-size: 13px; color: #555; margin-bottom: 6px; }
+    progress { width: 100%; height: 10px; border-radius: 5px; appearance: none; }
+    progress::-webkit-progress-bar { background: #eee; border-radius: 5px; }
+    progress::-webkit-progress-value { background: #111; border-radius: 5px; }
+    .badges { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+    .badge { padding: 5px 12px; border-radius: 20px; font-size: 13px; font-weight: 600; }
+    .valid   { background: #d4edda; color: #155724; }
+    .risky   { background: #fff3cd; color: #856404; }
+    .invalid { background: #f8d7da; color: #721c24; }
+    .dl-btn { display: block; margin-top: 16px; text-align: center; padding: 13px; background: #111; color: #fff; text-decoration: none; border-radius: 7px; font-size: 15px; }
+    .dl-btn:hover { background: #333; }
+    .error { margin-top: 14px; font-size: 13px; color: #c0392b; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Bulk Email Validator</h1>
+    <p class="sub">Upload a CSV with an <strong>Email</strong> column. The tool checks syntax, DNS, and MX records — then gives you a clean results file.</p>
+
+    <div class="upload-box" onclick="document.getElementById('fileInput').click()">
+      <p>Click to choose a CSV file</p>
+      <span>Only .csv files supported</span>
+      <input type="file" id="fileInput" accept=".csv" onchange="onFileSelected(this)">
+      <div id="fileName"></div>
+    </div>
+
+    <button id="btn" onclick="startValidation()" disabled>Validate Emails</button>
+
+    <div id="progressSection" class="section hidden">
+      <p class="label" id="statusText">Uploading...</p>
+      <progress id="bar" max="100" value="0"></progress>
+    </div>
+
+    <div id="badgeSection" class="badges hidden"></div>
+
+    <a id="dlBtn" class="dl-btn hidden" href="#">Download Results CSV</a>
+
+    <p id="errorMsg" class="error hidden"></p>
+  </div>
+
+  <script>
+    let jobId = null;
+    let poll = null;
+
+    function onFileSelected(input) {
+      const name = input.files[0]?.name || '';
+      document.getElementById('fileName').textContent = name;
+      document.getElementById('btn').disabled = !name;
+      document.getElementById('dlBtn').classList.add('hidden');
+      document.getElementById('badgeSection').classList.add('hidden');
+      document.getElementById('errorMsg').classList.add('hidden');
+    }
+
+    async function startValidation() {
+      const file = document.getElementById('fileInput').files[0];
+      if (!file) return;
+
+      document.getElementById('btn').disabled = true;
+      document.getElementById('dlBtn').classList.add('hidden');
+      document.getElementById('badgeSection').classList.add('hidden');
+      document.getElementById('errorMsg').classList.add('hidden');
+      document.getElementById('progressSection').classList.remove('hidden');
+      document.getElementById('statusText').textContent = 'Uploading...';
+      document.getElementById('bar').value = 0;
+
+      const form = new FormData();
+      form.append('file', file);
+
+      try {
+        const res = await fetch('/upload/', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Upload failed');
+        jobId = data.job_id;
+        document.getElementById('statusText').textContent = 'Validating emails...';
+        poll = setInterval(checkStatus, 2500);
+      } catch (e) { showError(e.message); }
+    }
+
+    async function checkStatus() {
+      try {
+        const res = await fetch('/status/' + jobId);
+        const data = await res.json();
+
+        if (data.status === 'processing' && data.progress) {
+          const p = data.progress;
+          const pct = Math.round((p.current / p.total) * 100);
+          document.getElementById('bar').value = pct;
+          document.getElementById('statusText').textContent = `Validating... ${p.current.toLocaleString()} / ${p.total.toLocaleString()} emails`;
+        } else if (data.status === 'completed') {
+          clearInterval(poll);
+          document.getElementById('bar').value = 100;
+          document.getElementById('statusText').textContent = 'Done!';
+          document.getElementById('dlBtn').href = '/download/' + jobId;
+          document.getElementById('dlBtn').classList.remove('hidden');
+          document.getElementById('btn').disabled = false;
+        } else if (data.status === 'failed') {
+          clearInterval(poll);
+          showError('Validation failed: ' + data.error);
+        }
+      } catch (e) { clearInterval(poll); showError('Connection lost. Please try again.'); }
+    }
+
+    function showError(msg) {
+      document.getElementById('errorMsg').textContent = msg;
+      document.getElementById('errorMsg').classList.remove('hidden');
+      document.getElementById('progressSection').classList.add('hidden');
+      document.getElementById('btn').disabled = false;
+    }
+  </script>
+</body>
+</html>"""
