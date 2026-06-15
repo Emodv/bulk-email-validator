@@ -228,10 +228,17 @@ def root():
     async function startValidation() {
       const file = document.getElementById('fileInput').files[0];
       if (!file) return;
+
+      // Client-side size check before uploading
+      if (file.size > 50 * 1024 * 1024) {
+        showError('File is too large (' + (file.size / 1024 / 1024).toFixed(1) + 'MB). Max is 50MB (~1.5M emails). Please split the file into smaller chunks.');
+        return;
+      }
+
       document.getElementById('btn').disabled = true;
       ['dlBtn','summarySection','errorMsg'].forEach(id => document.getElementById(id).classList.add('hidden'));
       document.getElementById('progressSection').classList.remove('hidden');
-      document.getElementById('statusText').textContent = 'Uploading...';
+      document.getElementById('statusText').textContent = 'Uploading (' + (file.size / 1024 / 1024).toFixed(1) + 'MB)...';
       document.getElementById('bar').value = 0;
 
       const form = new FormData();
@@ -243,7 +250,13 @@ def root():
         jobId = data.job_id;
         document.getElementById('statusText').textContent = 'Queued — starting validation...';
         poll = setInterval(checkStatus, 2500);
-      } catch(e) { showError(e.message); }
+      } catch(e) {
+        if (e.message === 'Failed to fetch') {
+          showError('Could not reach the server. Check your connection and try again, or the service may be restarting (wait 30 seconds and retry).');
+        } else {
+          showError(e.message);
+        }
+      }
     }
 
     async function checkStatus() {
