@@ -129,6 +129,10 @@ def root():
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Bulk Email Validator — Free Tool</title>
   <meta name="description" content="Free bulk email validator. Upload a CSV and instantly check syntax, DNS, and MX records for every email address. Download clean results.">
+  <meta property="og:title" content="Bulk Email Validator — Free Tool">
+  <meta property="og:description" content="Upload a CSV, validate millions of emails for syntax, DNS &amp; MX records, download clean results. Free, no signup.">
+  <meta property="og:url" content="https://bulk-email-validator-production.up.railway.app">
+  <link rel="canonical" href="https://bulk-email-validator-production.up.railway.app">
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px}
