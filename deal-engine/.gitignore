@@ -1,0 +1,12 @@
+# Secrets — NEVER commit
+.env
+
+# Runtime state
+cache.json
+
+# Logs
+logs/*.log
+
+# Node
+node_modules/
+npm-debug.log*
