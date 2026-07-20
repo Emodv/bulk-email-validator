@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Persona Analysis — "who is actually in this list?"
+Persona Analysis — "who is actually in this list?" (full population, no sampling)
 
-Single streaming pass over clean_master.csv. Answers, from the data itself:
-  * how many are business-domain vs free personal inboxes
-  * the top email domains (where these people's mail actually lives)
-  * industry signal — keyword frequency in the domain name
-  * how personal the data is (share of rows with a real first name)
-  * a random, unbiased sample of contacts to eyeball
+Single streaming pass over EVERY row of clean_master.csv. Reports:
+  * business vs free personal inbox
+  * company-size split — for each contact, how many colleagues share its domain
+    (this is what separates big-corporation employees from small-business owners)
+  * top domains and top country TLDs
+  * industry signal by keyword, with total coverage
+  * a tiny random spot-check sample (clearly labelled — not used for any stat)
 
-Writes persona_report.txt next to the input and prints it.
+Every percentage below is computed over all rows, not a sample.
 
 Usage:
     python analyze_persona.py CLEAN_MASTER.csv [OUT_persona_report.txt]
@@ -30,54 +31,51 @@ FREE_PROVIDERS = {
     "protonmail.com", "proton.me", "zoho.com", "rocketmail.com", "mail.com",
 }
 
-# Industry -> substrings we look for inside the domain name.
 INDUSTRY_KEYWORDS = {
-    "legal": ["law", "legal", "attorney", "lawyer", "injury", "counsel", "solicitor", "advocate", "barrister"],
-    "real_estate": ["realty", "realestate", "realtor", "property", "properties", "homes", "mortgage", "estate", "brokerage"],
-    "health_medical": ["dental", "dentist", "clinic", "health", "medical", "med", "care", "pharma", "physio", "chiro", "wellness", "therapy", "rehab", "vision", "optical"],
-    "beauty_salon": ["salon", "beauty", "spa", "hair", "nails", "skin", "aesthetic", "barber"],
-    "construction_trades": ["construction", "build", "contractor", "plumbing", "roofing", "hvac", "electric", "flooring", "renovation", "landscap", "painting", "concrete", "drywall"],
-    "automotive": ["auto", "motors", "cars", "garage", "tire", "collision", "automotive"],
-    "food_hospitality": ["restaurant", "cafe", "catering", "pizza", "kitchen", "bakery", "grill", "bistro", "hotel", "hospitality"],
-    "finance_accounting": ["account", "cpa", "tax", "finance", "financial", "insurance", "bookkeep", "wealth", "capital", "invest", "advisor", "advisory"],
-    "marketing_agency_design": ["marketing", "agency", "media", "design", "studio", "creative", "digital", "seo", "advertis", "brand"],
-    "retail_ecommerce": ["shop", "store", "boutique", "market", "retail", "commerce"],
-    "tech_it": ["tech", "software", "systems", "solutions", "cloud", "data", "digital", "cyber", "network", "consulting"],
-    "education": ["academy", "school", "college", "institute", "education", "tutor", "learning", "training", "coach"],
-    "fitness": ["fitness", "gym", "yoga", "pilates", "sport", "crossfit", "athletic"],
-    "nonprofit_org": ["foundation", "charity", "ngo", "nonprofit", "association", "society", "ministry", "church"],
+    "legal": ["law", "legal", "attorney", "lawyer", "injury", "counsel", "solicitor", "advocate", "barrister", "paralegal"],
+    "real_estate": ["realty", "realestate", "realtor", "property", "properties", "homes", "mortgage", "estate", "brokerage", "remax", "century21", "kw."],
+    "health_dental_clinic": ["dental", "dentist", "clinic", "ortho", "physio", "chiro", "wellness", "therapy", "rehab", "vision", "optical", "medic", "healthcare", "familyhealth", "veterin", "vet"],
+    "beauty_salon": ["salon", "beauty", "spa", "hair", "nails", "skin", "aesthetic", "barber", "lash", "brow", "makeup"],
+    "construction_trades": ["construction", "build", "contractor", "plumb", "roof", "hvac", "electric", "flooring", "renovation", "landscap", "painting", "concrete", "drywall", "remodel", "handyman", "fencing"],
+    "automotive": ["auto", "motors", "cars", "garage", "tire", "collision", "automotive", "bodyshop", "detailing"],
+    "food_hospitality": ["restaurant", "cafe", "catering", "pizza", "kitchen", "bakery", "grill", "bistro", "diner", "eatery"],
+    "finance_accounting": ["cpa", "tax", "bookkeep", "accountancy", "accounting", "wealth", "advisory", "advisors", "financialplan"],
+    "marketing_agency_design": ["marketing", "agency", "creative", "studio", "design", "seo", "advertis", "branding", "webdesign", "socialmedia"],
+    "retail_ecommerce": ["boutique", "shopify", "ecommerce", "storefront", "retailers"],
+    "trades_home_services": ["cleaning", "pest", "moving", "movers", "locksmith", "septic", "pool", "gutter", "windows", "doors"],
+    "education_coaching": ["academy", "tutor", "learning", "coaching", "montessori", "daycare", "preschool", "drivingschool"],
+    "fitness": ["fitness", "gym", "yoga", "pilates", "crossfit", "martialarts", "personaltrainer"],
+    "nonprofit_org": ["foundation", "charity", "ngo", "nonprofit", "ministry", "church", "temple"],
 }
+
+SIZE_BANDS = [
+    ("solo (1 contact)", 1, 1),
+    ("micro (2-5)", 2, 5),
+    ("small (6-20)", 6, 20),
+    ("medium (21-100)", 21, 100),
+    ("large (101-1000)", 101, 1000),
+    ("enterprise (1000+)", 1001, 10**12),
+]
 
 
 def registrable(domain):
-    """Best-effort 'name' part of a domain for keyword matching (drop the TLD)."""
     parts = domain.split(".")
-    if len(parts) >= 2:
-        return ".".join(parts[:-1])
-    return domain
+    return ".".join(parts[:-1]) if len(parts) >= 2 else domain
 
 
 def run(input_path, out_path):
     total = 0
     freemail = 0
-    business = 0
-    with_name = 0
     domain_counts = Counter()
+    tld_counts = Counter()
     industry_counts = Counter()
-    sample = []          # reservoir sample of (email, name)
-    RESERVOIR = 40
+    matched_any = 0
+    sample = []
+    RESERVOIR = 30
 
     with open(input_path, "r", newline="", encoding="utf-8", errors="replace") as fh:
         reader = csv.reader(fh)
-        header = next(reader, None)
-        # locate name column (first column after 'email' that looks like a first name)
-        name_idx = None
-        if header:
-            for i, h in enumerate(header):
-                if h and "first" in h.strip().lower():
-                    name_idx = i
-                    break
-
+        next(reader, None)  # header
         for row in reader:
             if not row:
                 continue
@@ -87,57 +85,71 @@ def run(input_path, out_path):
             total += 1
             domain = email.split("@", 1)[1]
             domain_counts[domain] += 1
-
+            tld_counts[domain.rsplit(".", 1)[-1]] += 1
             if domain in FREE_PROVIDERS:
                 freemail += 1
-            else:
-                business += 1
-
-            name = ""
-            if name_idx is not None and name_idx < len(row):
-                name = row[name_idx].strip()
-            if name:
-                with_name += 1
 
             reg = registrable(domain)
+            hit = False
             for industry, kws in INDUSTRY_KEYWORDS.items():
                 if any(kw in reg for kw in kws):
                     industry_counts[industry] += 1
+                    hit = True
+            if hit:
+                matched_any += 1
 
-            # reservoir sampling for an unbiased eyeball set
             if len(sample) < RESERVOIR:
-                sample.append((email, name))
+                sample.append(email)
             else:
                 j = random.randint(0, total - 1)
                 if j < RESERVOIR:
-                    sample[j] = (email, name)
+                    sample[j] = email
+
+    # Company-size split, derived from the full domain-frequency table (all rows).
+    band_contacts = Counter()
+    band_domains = Counter()
+    for dom, n in domain_counts.items():
+        for label, lo, hi in SIZE_BANDS:
+            if lo <= n <= hi:
+                band_contacts[label] += n
+                band_domains[label] += 1
+                break
 
     t = total or 1
-    lines = []
-    lines.append("=" * 64)
-    lines.append("PERSONA ANALYSIS")
-    lines.append("=" * 64)
-    lines.append(f"Input                : {input_path}")
-    lines.append(f"Contacts analyzed    : {total:,}")
-    lines.append(f"Business-domain      : {business:,} ({100*business/t:.1f}%)")
-    lines.append(f"Free personal inbox  : {freemail:,} ({100*freemail/t:.1f}%)")
-    lines.append(f"Rows with a name     : {with_name:,} ({100*with_name/t:.1f}%)")
-    lines.append(f"Distinct domains     : {len(domain_counts):,}")
-    lines.append("")
-    lines.append("TOP 60 DOMAINS (where their mail lives):")
-    for dom, n in domain_counts.most_common(60):
-        lines.append(f"  {dom:<32}: {n:,}")
-    lines.append("")
-    lines.append("INDUSTRY SIGNAL (domain-name keyword matches; a contact can match >1):")
+    L = []
+    L.append("=" * 66)
+    L.append("PERSONA ANALYSIS  (full population — every row counted)")
+    L.append("=" * 66)
+    L.append(f"Input                : {input_path}")
+    L.append(f"Contacts analyzed    : {total:,}")
+    L.append(f"Business-domain      : {total-freemail:,} ({100*(total-freemail)/t:.1f}%)")
+    L.append(f"Free personal inbox  : {freemail:,} ({100*freemail/t:.1f}%)")
+    L.append(f"Distinct domains     : {len(domain_counts):,}")
+    L.append("")
+    L.append("COMPANY SIZE  (contacts grouped by how many share their domain):")
+    L.append(f"  {'band':<22} {'contacts':>14} {'% of list':>10} {'domains':>12}")
+    for label, lo, hi in SIZE_BANDS:
+        c = band_contacts[label]
+        L.append(f"  {label:<22} {c:>14,} {100*c/t:>9.1f}% {band_domains[label]:>12,}")
+    L.append("")
+    L.append("TOP 40 DOMAINS:")
+    for dom, n in domain_counts.most_common(40):
+        L.append(f"  {dom:<34}: {n:,}")
+    L.append("")
+    L.append("TOP 30 COUNTRY / TLD:")
+    for tld, n in tld_counts.most_common(30):
+        L.append(f"  .{tld:<12}: {n:,} ({100*n/t:.1f}%)")
+    L.append("")
+    L.append(f"INDUSTRY SIGNAL  (keyword match in domain; {100*matched_any/t:.1f}% of list matched at least one):")
     for ind, n in industry_counts.most_common():
-        lines.append(f"  {ind:<26}: {n:,} ({100*n/t:.1f}%)")
-    lines.append("")
-    lines.append(f"RANDOM SAMPLE ({len(sample)} contacts):")
-    for email, name in sample:
-        lines.append(f"  {email:<44} {name}")
-    lines.append("=" * 64)
+        L.append(f"  {ind:<26}: {n:,} ({100*n/t:.1f}%)")
+    L.append("")
+    L.append(f"RANDOM SPOT-CHECK ({len(sample)} contacts — illustration only, not used for stats):")
+    for e in sample:
+        L.append(f"  {e}")
+    L.append("=" * 66)
 
-    text = "\n".join(lines)
+    text = "\n".join(L)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(text + "\n")
     print(text)
